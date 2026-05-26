@@ -1,8 +1,8 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use log::info;
 use quick_xml::{events::Event, Reader};
-use std::{error::Error, fs::File, io::BufReader, path::PathBuf};
+use std::{fs::File, io::BufReader, path::PathBuf};
 use structopt::StructOpt;
 
 mod artist;
@@ -32,16 +32,12 @@ fn main() -> Result<()> {
 
     let opt = Opt::from_args();
 
-    if let Err(e) = read_files(&opt) {
-        println!("{:?}", e);
-        std::process::exit(1);
-    }
-    Ok(())
+    read_files(&opt)
 }
 
-fn read_files(opt: &Opt) -> Result<(), Box<dyn Error>> {
+fn read_files(opt: &Opt) -> Result<()> {
     for file in &opt.files {
-        let gzfile = File::open(file.to_str().unwrap())?;
+        let gzfile = File::open(file).with_context(|| format!("opening {}", file.display()))?;
         let xmlfile = GzDecoder::new(gzfile);
         let xmlfile = BufReader::new(xmlfile);
         let mut xmlfile = Reader::from_reader(xmlfile);
@@ -49,50 +45,44 @@ fn read_files(opt: &Opt) -> Result<(), Box<dyn Error>> {
 
         // Parse fileinput on type (label/release/artist)
         let mut parser: Box<dyn parser::Parser> = loop {
-            if let Event::Start(ref e) = xmlfile.read_event(&mut buf)? {
-                match e.name() {
-                    b"labels" => {
-                        db::init(&opt.dbopts, "sql/tables/label.sql")?;
-                        break Box::new(parser::Parser::new(
-                            &label::LabelsParser::new(&opt.dbopts),
-                            &opt.dbopts,
-                        ));
-                    }
-                    b"releases" => {
-                        db::init(&opt.dbopts, "sql/tables/release.sql")?;
-                        break Box::new(parser::Parser::new(
-                            &release::ReleasesParser::new(&opt.dbopts),
-                            &opt.dbopts,
-                        ));
-                    }
-                    b"artists" => {
-                        db::init(&opt.dbopts, "sql/tables/artist.sql")?;
-                        break Box::new(parser::Parser::new(
-                            &artist::ArtistsParser::new(&opt.dbopts),
-                            &opt.dbopts,
-                        ));
-                    }
-                    b"masters" => {
-                        db::init(&opt.dbopts, "sql/tables/master.sql")?;
-                        break Box::new(parser::Parser::new(
-                            &master::MastersParser::new(&opt.dbopts),
-                            &opt.dbopts,
-                        ));
-                    }
-                    _ => (),
-                };
-                buf.clear();
-            };
+            match xmlfile.read_event(&mut buf)? {
+                Event::Start(ref e) => {
+                    match e.name() {
+                        b"labels" => {
+                            db::init(&opt.dbopts, "sql/tables/label.sql")?;
+                            break Box::new(label::LabelsParser::new(&opt.dbopts));
+                        }
+                        b"releases" => {
+                            db::init(&opt.dbopts, "sql/tables/release.sql")?;
+                            break Box::new(release::ReleasesParser::new(&opt.dbopts));
+                        }
+                        b"artists" => {
+                            db::init(&opt.dbopts, "sql/tables/artist.sql")?;
+                            break Box::new(artist::ArtistsParser::new(&opt.dbopts));
+                        }
+                        b"masters" => {
+                            db::init(&opt.dbopts, "sql/tables/master.sql")?;
+                            break Box::new(master::MastersParser::new(&opt.dbopts));
+                        }
+                        _ => (),
+                    };
+                }
+                Event::Eof => bail!(
+                    "{} does not contain a supported Discogs root tag",
+                    file.display()
+                ),
+                _ => (),
+            }
             buf.clear();
         };
 
         // Parse and insert file
-        let gzfile = File::open(file.to_str().unwrap())?;
+        let gzfile = File::open(file).with_context(|| format!("opening {}", file.display()))?;
         let xmlfile = GzDecoder::new(gzfile);
         let xmlfile = BufReader::new(xmlfile);
         let mut xmlfile = Reader::from_reader(xmlfile);
         let mut buf = Vec::with_capacity(BUF_SIZE);
-        info!("Parsing and inserting: {:?}", file.file_name().unwrap());
+        info!("Parsing and inserting: {}", file.display());
         loop {
             match xmlfile.read_event(&mut buf)? {
                 Event::Eof => break,
@@ -103,7 +93,7 @@ fn read_files(opt: &Opt) -> Result<(), Box<dyn Error>> {
     }
 
     if opt.dbopts.create_indexes {
-        db::indexes(&opt.dbopts, "sql/indexes.sql")?;
+        db::indexes(&opt.dbopts, "sql/indexes_safe.sql")?;
     }
 
     Ok(())

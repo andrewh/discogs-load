@@ -1,7 +1,7 @@
 use indicatif::ProgressBar;
 use postgres::types::ToSql;
 use quick_xml::events::Event;
-use std::{collections::HashMap, error::Error, str};
+use std::{collections::HashMap, str};
 
 use crate::db::{write_masters, DbOpt, SqlSerialization};
 use crate::parser::Parser;
@@ -85,7 +85,14 @@ enum ParserReadState {
     MainRelease,
     Artists,
     Title,
+    Year,
+    Notes,
+    Genres,
+    Genre,
+    Styles,
+    Style,
     DataQuality,
+    Videos,
     // master_artists
     ArtistId,
     ArtistName,
@@ -119,37 +126,37 @@ impl<'a> MastersParser<'a> {
     }
 }
 
-impl<'a> Parser<'a> for MastersParser<'a> {
-    fn new(&self, db_opts: &'a DbOpt) -> Self {
-        MastersParser {
-            state: ParserReadState::Master,
-            masters: HashMap::new(),
-            current_master: Master::new(),
-            current_artist: MasterArtist::new(),
-            current_master_id: 0,
-            master_artists: HashMap::new(),
-            pb: ProgressBar::new(1821993),
-            db_opts,
-        }
-    }
-    fn process(&mut self, ev: Event) -> Result<(), Box<dyn Error>> {
+impl<'a> Parser for MastersParser<'a> {
+    fn process(&mut self, ev: Event) -> anyhow::Result<()> {
         self.state = match self.state {
             ParserReadState::Master => {
                 match ev {
                     Event::Start(e) if e.local_name() == b"master" => {
-                        self.current_master.genres = Vec::new();
-                        self.current_master.styles = Vec::new();
-                        self.current_master.id = str::parse(str::from_utf8(
-                            &e.attributes().next().unwrap()?.unescaped_value()?,
-                        )?)?;
+                        self.current_master = Master::new();
+                        for attr in e.attributes().flatten() {
+                            if attr.key == b"id" {
+                                if let Ok(raw) = attr.unescaped_value() {
+                                    if let Ok(val) = str::from_utf8(&raw) {
+                                        if let Ok(parsed) = str::parse::<i32>(val) {
+                                            self.current_master.id = parsed;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         ParserReadState::Master
                     }
 
                     Event::Start(e) => match e.local_name() {
                         b"main_release" => ParserReadState::MainRelease,
                         b"title" => ParserReadState::Title,
+                        b"year" => ParserReadState::Year,
+                        b"notes" => ParserReadState::Notes,
+                        b"genres" => ParserReadState::Genres,
+                        b"styles" => ParserReadState::Styles,
                         b"artists" => ParserReadState::Artists,
                         b"data_quality" => ParserReadState::DataQuality,
+                        b"videos" => ParserReadState::Videos,
                         _ => ParserReadState::Master,
                     },
 
@@ -271,6 +278,66 @@ impl<'a> Parser<'a> for MastersParser<'a> {
                 _ => ParserReadState::Title,
             },
 
+            ParserReadState::Year => match ev {
+                Event::Text(e) => {
+                    self.current_master.year = str::parse(str::from_utf8(&e.unescaped()?)?)?;
+                    ParserReadState::Year
+                }
+
+                Event::End(e) if e.local_name() == b"year" => ParserReadState::Master,
+
+                _ => ParserReadState::Year,
+            },
+
+            ParserReadState::Notes => match ev {
+                Event::Text(e) => {
+                    self.current_master.notes = str::parse(str::from_utf8(&e.unescaped()?)?)?;
+                    ParserReadState::Notes
+                }
+
+                Event::End(e) if e.local_name() == b"notes" => ParserReadState::Master,
+
+                _ => ParserReadState::Notes,
+            },
+
+            ParserReadState::Genres => match ev {
+                Event::Start(e) if e.local_name() == b"genre" => ParserReadState::Genre,
+
+                Event::End(e) if e.local_name() == b"genres" => ParserReadState::Master,
+
+                _ => ParserReadState::Genres,
+            },
+
+            ParserReadState::Genre => match ev {
+                Event::Text(e) => {
+                    self.current_master
+                        .genres
+                        .extend(str::parse(str::from_utf8(&e.unescaped()?)?));
+                    ParserReadState::Genres
+                }
+
+                _ => ParserReadState::Genres,
+            },
+
+            ParserReadState::Styles => match ev {
+                Event::Start(e) if e.local_name() == b"style" => ParserReadState::Style,
+
+                Event::End(e) if e.local_name() == b"styles" => ParserReadState::Master,
+
+                _ => ParserReadState::Styles,
+            },
+
+            ParserReadState::Style => match ev {
+                Event::Text(e) => {
+                    self.current_master
+                        .styles
+                        .extend(str::parse(str::from_utf8(&e.unescaped()?)?));
+                    ParserReadState::Styles
+                }
+
+                _ => ParserReadState::Styles,
+            },
+
             ParserReadState::DataQuality => match ev {
                 Event::Text(e) => {
                     self.current_master.data_quality =
@@ -281,6 +348,11 @@ impl<'a> Parser<'a> for MastersParser<'a> {
                 Event::End(e) if e.local_name() == b"data_quality" => ParserReadState::Master,
 
                 _ => ParserReadState::DataQuality,
+            },
+
+            ParserReadState::Videos => match ev {
+                Event::End(e) if e.local_name() == b"videos" => ParserReadState::Master,
+                _ => ParserReadState::Videos,
             },
         };
 

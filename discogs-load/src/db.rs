@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use log::info;
 use postgres::types::{ToSql, Type};
 use postgres::{binary_copy::BinaryCopyInWriter, Client, NoTls};
@@ -55,8 +55,8 @@ pub fn indexes(opts: &DbOpt, file_path: &str) -> Result<()> {
 pub fn write_releases(
     db_opts: &DbOpt,
     releases: &HashMap<i32, Release>,
-    releases_labels: &HashMap<i32, ReleaseLabel>,
-    releases_videos: &HashMap<i32, ReleaseVideo>,
+    releases_labels: &[ReleaseLabel],
+    releases_videos: &[ReleaseVideo],
 ) -> Result<()> {
     let mut db = Db::connect(db_opts)?;
     Db::write_rows(&mut db, releases, InsertCommand::new(
@@ -75,7 +75,7 @@ pub fn write_releases(
             Type::TEXT,
         ],
     )?)?;
-    Db::write_rows(
+    Db::write_slice(
         &mut db,
         releases_labels,
         InsertCommand::new(
@@ -84,7 +84,7 @@ pub fn write_releases(
             &[Type::INT4, Type::TEXT, Type::TEXT, Type::INT4],
         )?,
     )?;
-    Db::write_rows(
+    Db::write_slice(
         &mut db,
         releases_videos,
         InsertCommand::new(
@@ -199,13 +199,25 @@ impl Db {
         data: &HashMap<i32, T>,
         insert_cmd: InsertCommand,
     ) -> Result<()> {
-        insert_cmd.execute(&mut self.db_client, data)?;
+        insert_cmd.execute(&mut self.db_client, data.values())?;
+        Ok(())
+    }
+
+    fn write_slice<T: SqlSerialization>(
+        &mut self,
+        data: &[T],
+        insert_cmd: InsertCommand,
+    ) -> Result<()> {
+        insert_cmd.execute(&mut self.db_client, data.iter())?;
         Ok(())
     }
 
     fn execute_file(&mut self, schema_path: &str) -> Result<()> {
-        let tables_structure = fs::read_to_string(schema_path).unwrap();
-        self.db_client.batch_execute(&tables_structure).unwrap();
+        let tables_structure = fs::read_to_string(schema_path)
+            .with_context(|| format!("reading SQL file {schema_path}"))?;
+        self.db_client
+            .batch_execute(&tables_structure)
+            .with_context(|| format!("executing SQL file {schema_path}"))?;
         Ok(())
     }
 }
@@ -223,14 +235,15 @@ impl<'a> InsertCommand<'a> {
         })
     }
 
-    fn execute<T>(&self, client: &mut Client, data: &HashMap<i32, T>) -> Result<()>
+    fn execute<'b, T, I>(&self, client: &mut Client, data: I) -> Result<()>
     where
-        T: SqlSerialization,
+        T: SqlSerialization + 'b,
+        I: IntoIterator<Item = &'b T>,
     {
         let sink = client.copy_in(&self.copy_stm)?;
         let mut writer = BinaryCopyInWriter::new(sink, self.col_types);
 
-        for values in data.values() {
+        for values in data {
             writer.write(&values.to_sql())?;
         }
 

@@ -15,14 +15,14 @@ For a more comprehensive example see the source for
 
 use std::{
     env,
-    fs::File,
+    fs::{self, File},
     path::{Path, PathBuf},
+    process::Command,
 };
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use flate2::{write::GzEncoder, Compression};
 use structopt::StructOpt;
-use xshell::{cmd, mkdir_p, rm_rf};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "xtask")]
@@ -40,12 +40,23 @@ fn main() -> Result<()> {
 
 fn run_dist() -> Result<()> {
     let dist = project_root().join("dist");
-    rm_rf(&dist)?;
-    mkdir_p(&dist)?;
+    if dist.exists() {
+        fs::remove_dir_all(&dist)?;
+    }
+    fs::create_dir_all(&dist)?;
 
     let target = get_target();
 
-    cmd!("cargo build --manifest-path ./discogs-load/Cargo.toml --bin discogs-load --target {target} --release").run()?;
+    run(Command::new("cargo").args([
+        "build",
+        "--manifest-path",
+        "./discogs-load/Cargo.toml",
+        "--bin",
+        "discogs-load",
+        "--target",
+        &target,
+        "--release",
+    ]))?;
 
     let suffix = exe_suffix(&target);
     let src = Path::new("target")
@@ -59,7 +70,15 @@ fn run_dist() -> Result<()> {
 }
 
 fn run_install() -> Result<()> {
-    cmd!("cargo install --path discogs-load --locked --force").run()?;
+    run(Command::new("cargo").args(["install", "--path", "discogs-load", "--locked", "--force"]))?;
+    Ok(())
+}
+
+fn run(command: &mut Command) -> Result<()> {
+    let status = command.status()?;
+    if !status.success() {
+        bail!("command failed with status {status}: {command:?}");
+    }
     Ok(())
 }
 

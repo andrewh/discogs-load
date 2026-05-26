@@ -1,7 +1,7 @@
 use indicatif::ProgressBar;
 use postgres::types::ToSql;
 use quick_xml::events::Event;
-use std::{collections::HashMap, error::Error, str};
+use std::{collections::HashMap, str};
 
 use crate::db::{write_releases, DbOpt, SqlSerialization};
 use crate::parser::Parser;
@@ -105,6 +105,10 @@ enum ParserReadState {
     Labels,
     // release_video
     Videos,
+    Video,
+    VideoTitle,
+    // ignored nested groups
+    Tracklist,
 }
 
 pub struct ReleasesParser<'a> {
@@ -112,9 +116,9 @@ pub struct ReleasesParser<'a> {
     releases: HashMap<i32, Release>,
     current_release: Release,
     current_id: i32,
-    release_labels: HashMap<i32, ReleaseLabel>,
-    current_video_id: i32,
-    release_videos: HashMap<i32, ReleaseVideo>,
+    release_labels: Vec<ReleaseLabel>,
+    current_video: ReleaseVideo,
+    release_videos: Vec<ReleaseVideo>,
     pb: ProgressBar,
     db_opts: &'a DbOpt,
 }
@@ -126,31 +130,22 @@ impl<'a> ReleasesParser<'a> {
             releases: HashMap::new(),
             current_release: Release::new(),
             current_id: 0,
-            release_labels: HashMap::new(),
-            current_video_id: 0,
-            release_videos: HashMap::new(),
+            release_labels: Vec::new(),
+            current_video: ReleaseVideo {
+                release_id: 0,
+                duration: 0,
+                src: String::new(),
+                title: String::new(),
+            },
+            release_videos: Vec::new(),
             pb: ProgressBar::new(14976967), // https://api.discogs.com/
             db_opts,
         }
     }
 }
 
-impl<'a> Parser<'a> for ReleasesParser<'a> {
-    fn new(&self, db_opts: &'a DbOpt) -> Self {
-        ReleasesParser {
-            state: ParserReadState::Release,
-            releases: HashMap::new(),
-            current_release: Release::new(),
-            current_id: 0,
-            release_labels: HashMap::new(),
-            current_video_id: 0,
-            release_videos: HashMap::new(),
-            pb: ProgressBar::new(14976967), // https://api.discogs.com/
-            db_opts,
-        }
-    }
-
-    fn process(&mut self, ev: Event) -> Result<(), Box<dyn Error>> {
+impl<'a> Parser for ReleasesParser<'a> {
+    fn process(&mut self, ev: Event) -> anyhow::Result<()> {
         self.state = match self.state {
             ParserReadState::Release => {
                 match ev {
@@ -158,31 +153,28 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
                         // Be defensive: attributes order is not guaranteed. Find attributes by name.
                         let mut id_opt: Option<i32> = None;
                         let mut status_opt: Option<String> = None;
-                        for attr_res in e.attributes() {
-                            if let Ok(attr) = attr_res {
-                                let key = attr.key;
-                                if let Ok(raw) = attr.unescaped_value() {
-                                    if let Ok(val) = str::from_utf8(&raw) {
-                                        match key {
-                                            b"id" => {
-                                                if let Ok(parsed) = str::parse::<i32>(val) {
-                                                    id_opt = Some(parsed);
-                                                }
+                        for attr in e.attributes().flatten() {
+                            let key = attr.key;
+                            if let Ok(raw) = attr.unescaped_value() {
+                                if let Ok(val) = str::from_utf8(&raw) {
+                                    match key {
+                                        b"id" => {
+                                            if let Ok(parsed) = str::parse::<i32>(val) {
+                                                id_opt = Some(parsed);
                                             }
-                                            b"status" => {
-                                                status_opt = Some(val.to_string());
-                                            }
-                                            _ => {}
                                         }
+                                        b"status" => {
+                                            status_opt = Some(val.to_string());
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
                         }
+                        self.current_release = Release::new();
                         self.current_release.status = status_opt.unwrap_or_default();
                         self.current_id = id_opt.unwrap_or_default();
                         self.current_release.id = self.current_id;
-                        self.current_release.genres = Vec::new();
-                        self.current_release.styles = Vec::new();
                         ParserReadState::Release
                     }
 
@@ -197,6 +189,7 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
                         b"data_quality" => ParserReadState::DataQuality,
                         b"labels" => ParserReadState::Labels,
                         b"videos" => ParserReadState::Videos,
+                        b"tracklist" => ParserReadState::Tracklist,
                         _ => ParserReadState::Release,
                     },
 
@@ -214,8 +207,8 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
                                 &self.release_videos,
                             )?;
                             self.releases = HashMap::new();
-                            self.release_labels = HashMap::new();
-                            self.release_videos = HashMap::new();
+                            self.release_labels.clear();
+                            self.release_videos.clear();
                         }
                         self.pb.inc(1);
                         ParserReadState::Release
@@ -347,30 +340,28 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
                     let mut name = String::new();
                     let mut catno = String::new();
                     let mut label_id = 0i32;
-                    for attr_res in e.attributes() {
-                        if let Ok(attr) = attr_res {
-                            let key = attr.key;
-                            if let Ok(raw) = attr.unescaped_value() {
-                                if let Ok(val) = str::from_utf8(&raw) {
-                                    match key {
-                                        b"name" => name = val.to_string(),
-                                        b"catno" => catno = val.to_string(),
-                                        b"id" => {
-                                            if let Ok(parsed) = str::parse::<i32>(val) {
-                                                label_id = parsed;
-                                            }
+                    for attr in e.attributes().flatten() {
+                        let key = attr.key;
+                        if let Ok(raw) = attr.unescaped_value() {
+                            if let Ok(val) = str::from_utf8(&raw) {
+                                match key {
+                                    b"name" => name = val.to_string(),
+                                    b"catno" => catno = val.to_string(),
+                                    b"id" => {
+                                        if let Ok(parsed) = str::parse::<i32>(val) {
+                                            label_id = parsed;
                                         }
-                                        _ => {}
                                     }
+                                    _ => {}
                                 }
                             }
                         }
                     }
-                    self.release_labels.entry(label_id).or_insert(ReleaseLabel {
+                    self.release_labels.push(ReleaseLabel {
                         release_id: self.current_release.id,
                         label: name,
-                        catno: catno,
-                        label_id: label_id,
+                        catno,
+                        label_id,
                     });
                     ParserReadState::Labels
                 }
@@ -385,39 +376,61 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
                     // Parse attributes by name: duration, src
                     let mut duration = 0i32;
                     let mut src = String::new();
-                    for attr_res in e.attributes() {
-                        if let Ok(attr) = attr_res {
-                            let key = attr.key;
-                            if let Ok(raw) = attr.unescaped_value() {
-                                if let Ok(val) = str::from_utf8(&raw) {
-                                    match key {
-                                        b"duration" => {
-                                            if let Ok(parsed) = str::parse::<i32>(val) {
-                                                duration = parsed;
-                                            }
+                    for attr in e.attributes().flatten() {
+                        let key = attr.key;
+                        if let Ok(raw) = attr.unescaped_value() {
+                            if let Ok(val) = str::from_utf8(&raw) {
+                                match key {
+                                    b"duration" => {
+                                        if let Ok(parsed) = str::parse::<i32>(val) {
+                                            duration = parsed;
                                         }
-                                        b"src" => src = val.to_string(),
-                                        _ => {}
                                     }
+                                    b"src" => src = val.to_string(),
+                                    _ => {}
                                 }
                             }
                         }
                     }
-                    self.release_videos
-                        .entry(self.current_video_id)
-                        .or_insert(ReleaseVideo {
-                            release_id: self.current_release.id,
-                            duration,
-                            src,
-                            title: String::new(),
-                        });
-                    self.current_video_id += 1;
-                    ParserReadState::Videos
+                    self.current_video = ReleaseVideo {
+                        release_id: self.current_release.id,
+                        duration,
+                        src,
+                        title: String::new(),
+                    };
+                    ParserReadState::Video
                 }
 
                 Event::End(e) if e.local_name() == b"videos" => ParserReadState::Release,
 
                 _ => ParserReadState::Videos,
+            },
+
+            ParserReadState::Video => match ev {
+                Event::Start(e) if e.local_name() == b"title" => ParserReadState::VideoTitle,
+
+                Event::End(e) if e.local_name() == b"video" => {
+                    self.release_videos.push(self.current_video.clone());
+                    ParserReadState::Videos
+                }
+
+                _ => ParserReadState::Video,
+            },
+
+            ParserReadState::VideoTitle => match ev {
+                Event::Text(e) => {
+                    self.current_video.title = str::parse(str::from_utf8(&e.unescaped()?)?)?;
+                    ParserReadState::VideoTitle
+                }
+
+                Event::End(e) if e.local_name() == b"title" => ParserReadState::Video,
+
+                _ => ParserReadState::VideoTitle,
+            },
+
+            ParserReadState::Tracklist => match ev {
+                Event::End(e) if e.local_name() == b"tracklist" => ParserReadState::Release,
+                _ => ParserReadState::Tracklist,
             },
         };
 

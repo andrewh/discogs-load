@@ -1,7 +1,7 @@
 use indicatif::ProgressBar;
 use postgres::types::ToSql;
 use quick_xml::events::Event;
-use std::{collections::HashMap, error::Error, str};
+use std::{collections::HashMap, str};
 
 use crate::db::{write_labels, DbOpt, SqlSerialization};
 use crate::parser::Parser;
@@ -84,23 +84,13 @@ impl<'a> LabelsParser<'a> {
     }
 }
 
-impl<'a> Parser<'a> for LabelsParser<'a> {
-    fn new(&self, db_opts: &'a DbOpt) -> Self {
-        LabelsParser {
-            state: ParserState::Label,
-            labels: HashMap::new(),
-            current_label: Label::new(),
-            pb: ProgressBar::new(1821993),
-            db_opts,
-        }
-    }
-    fn process(&mut self, ev: Event) -> Result<(), Box<dyn Error>> {
+impl<'a> Parser for LabelsParser<'a> {
+    fn process(&mut self, ev: Event) -> anyhow::Result<()> {
         self.state = match self.state {
             ParserState::Label => {
                 match ev {
                     Event::Start(e) if e.local_name() == b"label" => {
-                        self.current_label.sublabels = Vec::new();
-                        self.current_label.urls = Vec::new();
+                        self.current_label = Label::new();
                         ParserState::Label
                     }
 

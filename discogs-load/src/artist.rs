@@ -1,7 +1,7 @@
 use indicatif::ProgressBar;
 use postgres::types::ToSql;
 use quick_xml::events::Event;
-use std::{collections::HashMap, error::Error, str};
+use std::{collections::HashMap, str};
 
 use crate::db::{write_artists, DbOpt, SqlSerialization};
 use crate::parser::Parser;
@@ -61,6 +61,7 @@ enum ParserState {
     Profile,
     DataQuality,
     NameVariations,
+    NameVariation,
     Url,
     Urls,
     Alias,
@@ -89,25 +90,13 @@ impl<'a> ArtistsParser<'a> {
     }
 }
 
-impl<'a> Parser<'a> for ArtistsParser<'a> {
-    fn new(&self, db_opts: &'a DbOpt) -> Self {
-        ArtistsParser {
-            state: ParserState::Artist,
-            artists: HashMap::new(),
-            current_artist: Artist::new(),
-            pb: ProgressBar::new(7993954),
-            db_opts,
-        }
-    }
-    fn process(&mut self, ev: Event) -> Result<(), Box<dyn Error>> {
+impl<'a> Parser for ArtistsParser<'a> {
+    fn process(&mut self, ev: Event) -> anyhow::Result<()> {
         self.state = match self.state {
             ParserState::Artist => {
                 match ev {
                     Event::Start(e) if e.local_name() == b"artist" => {
-                        self.current_artist.name_variations = Vec::new();
-                        self.current_artist.urls = Vec::new();
-                        self.current_artist.aliases = Vec::new();
-                        self.current_artist.members = Vec::new();
+                        self.current_artist = Artist::new();
                         ParserState::Artist
                     }
 
@@ -208,7 +197,7 @@ impl<'a> Parser<'a> for ArtistsParser<'a> {
 
                 Event::End(e) if e.local_name() == b"urls" => ParserState::Artist,
 
-                _ => ParserState::Artist,
+                _ => ParserState::Urls,
             },
 
             ParserState::Url => match ev {
@@ -223,17 +212,17 @@ impl<'a> Parser<'a> for ArtistsParser<'a> {
             },
 
             ParserState::Aliases => match ev {
-                Event::Start(e) if e.local_name() == b"alias" => ParserState::Alias,
+                Event::Start(e) if e.local_name() == b"name" => ParserState::Alias,
 
                 Event::End(e) if e.local_name() == b"aliases" => ParserState::Artist,
 
-                _ => ParserState::Artist,
+                _ => ParserState::Aliases,
             },
 
             ParserState::Alias => match ev {
                 Event::Text(e) => {
                     self.current_artist
-                        .members
+                        .aliases
                         .extend(str::parse(str::from_utf8(&e.unescaped()?)?));
                     ParserState::Aliases
                 }
@@ -242,11 +231,11 @@ impl<'a> Parser<'a> for ArtistsParser<'a> {
             },
 
             ParserState::Members => match ev {
-                Event::Start(e) if e.local_name() == b"member" => ParserState::Member,
+                Event::Start(e) if e.local_name() == b"name" => ParserState::Member,
 
                 Event::End(e) if e.local_name() == b"members" => ParserState::Artist,
 
-                _ => ParserState::Artist,
+                _ => ParserState::Members,
             },
 
             ParserState::Member => match ev {
@@ -260,7 +249,24 @@ impl<'a> Parser<'a> for ArtistsParser<'a> {
                 _ => ParserState::Members,
             },
 
-            _ => ParserState::Members,
+            ParserState::NameVariations => match ev {
+                Event::Start(e) if e.local_name() == b"name" => ParserState::NameVariation,
+
+                Event::End(e) if e.local_name() == b"namevariations" => ParserState::Artist,
+
+                _ => ParserState::NameVariations,
+            },
+
+            ParserState::NameVariation => match ev {
+                Event::Text(e) => {
+                    self.current_artist
+                        .name_variations
+                        .extend(str::parse(str::from_utf8(&e.unescaped()?)?));
+                    ParserState::NameVariations
+                }
+
+                _ => ParserState::NameVariations,
+            },
         };
 
         Ok(())

@@ -24,6 +24,12 @@ change_applied=no
 old_sync=""
 old_maint=""
 
+cleanup() {
+  revert_alter_system
+}
+
+trap cleanup EXIT
+
 try_alter_system() {
   echo "Attempting ALTER SYSTEM tuning (requires superuser)..." >> "$LOG_FILE"
   # Try as postgres first
@@ -100,26 +106,20 @@ main() {
   echo "$IMPORT_PID" > "$PID_FILE"
   echo "Importer PID: $IMPORT_PID" >> "$LOG_FILE"
 
-  # Wait for the importer to exit, tailing log periodically
+  # Wait for the importer to exit.
   while kill -0 "$IMPORT_PID" >/dev/null 2>&1; do
     sleep 30
-    tail -n 200 "$LOG_FILE" >> "$LOG_FILE" 2>&1 || true
   done
 
-  wait "$IMPORT_PID" || true
+  wait "$IMPORT_PID"
   echo "Importer finished at $(date)" >> "$LOG_FILE"
 
   # Create indexes if requested
   if [ "$CREATE_INDEXES_AFTER_IMPORT" = yes ]; then
-    echo "Creating indexes with --create-indexes" >> "$LOG_FILE"
-    # Create indexes (omit --db-port)
-    nohup "$RELEASE_BIN" --create-indexes --db-host "$DB_HOST" --db-user "$DB_USER" --db-password "$DB_PASS" --db-name "$DB_NAME" >> "$LOG_FILE" 2>&1 &
-    wait $! || true
+    echo "Creating indexes with sql/indexes_safe.sql" >> "$LOG_FILE"
+    PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f sql/indexes_safe.sql >> "$LOG_FILE" 2>&1
     echo "Index creation finished at $(date)" >> "$LOG_FILE"
   fi
-
-  # Revert ALTER SYSTEM if we changed anything
-  revert_alter_system
 
   echo "All done at $(date)" >> "$LOG_FILE"
 }

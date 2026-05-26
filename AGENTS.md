@@ -13,11 +13,11 @@ Exact commands you will need frequently
 - Build locally (debug): `cargo build --bin discogs-load`.
 - Run (uses defaults shown above): `cargo run --bin discogs-load <path/to/file(s).gz>`.
 - Build release binary: `cargo build --bin discogs-load --release`.
-- Create platform-specific compressed dist (uses `xtask`): `cargo xtask dist` (alias defined in `.cargo/config`).
+- Create platform-specific compressed dist (uses `xtask`): `cargo xtask dist` (alias defined in `.cargo/config.toml`).
 - Install the binary to `~/.cargo/bin`: `cargo xtask install`.
 
 xtask / release notes
-- `.cargo/config` defines `cargo xtask` alias which runs the `xtask` crate.
+- `.cargo/config.toml` defines `cargo xtask` alias which runs the `xtask` crate.
 - `cargo xtask dist` expects `DIST_TARGET` env var when cross-building. The CI sets `DIST_TARGET` per-matrix; set it locally if you need a non-default target.
 - `xtask dist` builds the `discogs-load` binary for the target and writes gzipped artifacts into `./dist` (this is what the release workflow uploads).
 
@@ -26,7 +26,7 @@ CI and reproducible verification
 - The release workflow (`.github/workflows/release.yml`) triggers only on tag pushes matching `v*.*.*` and uses `cargo xtask dist` to produce multi-platform artifacts.
 
 Schema and indexes
-- Table creation SQLs are under `sql/tables/*.sql` and indexes are in `sql/indexes.sql`.
+- Table creation SQLs are under `sql/tables/*.sql`. Prefer `sql/indexes_safe.sql` for index creation because it is idempotent and skips missing tables.
 - The binary runs `db::init(...)` automatically when it detects the file type (labels/releases/artists/masters) before inserting rows. You do not need to run the SQL manually for normal runs.
 - Indexes are created only when you run the binary with `--create-indexes` (or set the `create_indexes` flag via CLI).
 
@@ -40,14 +40,14 @@ Data files and format
 
 Repository layout pointers (high-signal)
 - Workspace members: `discogs-load/` (app), `xtask/` (release helpers).
-- SQL schema: `sql/tables/*.sql`, `sql/indexes.sql`.
+- SQL schema: `sql/tables/*.sql`; safe index creation: `sql/indexes_safe.sql`.
 - Docker compose: `docker-compose.yml` defines `postgres` service used in README and CI.
 - Release dist: `xtask` writes artifacts to `./dist`.
 
 Common gotchas an agent would miss
 - Always start Postgres before running the binary; CI relies on `docker-compose up -d postgres` and the service healthcheck—local Postgres may need time to become ready.
 - Use the small `test_data` files when iterating locally; the real dumps are huge and expensive to parse.
-- `cargo xtask` is available because of `.cargo/config` alias; calling the `xtask` crate directly with `cargo run --package xtask --bin xtask -- <cmd>` is equivalent but longer.
+- `cargo xtask` is available because of `.cargo/config.toml` alias; calling the `xtask` crate directly with `cargo run --package xtask --bin xtask -- <cmd>` is equivalent but longer.
 - When cross-building via `xtask dist`, set `DIST_TARGET` to the target triple you want; otherwise xtask picks a default based on the host compile cfg which may be wrong for cross builds.
 
 If you need more context
