@@ -94,7 +94,8 @@ main() {
 
   # Start importer in background with nohup
   echo "Starting importer at $(date)" >> "$LOG_FILE"
-  nohup "$RELEASE_BIN" "$RELEASE_FILE" --db-host "$DB_HOST" --db-port "$DB_PORT" --db-user "$DB_USER" --db-password "$DB_PASS" --db-name "$DB_NAME" --batch-size "$BATCH_SIZE" > "$LOG_FILE" 2>&1 &
+  # Note: the discogs-load binary does not accept --db-port; omit it.
+  nohup "$RELEASE_BIN" "$RELEASE_FILE" --db-host "$DB_HOST" --db-user "$DB_USER" --db-password "$DB_PASS" --db-name "$DB_NAME" --batch-size "$BATCH_SIZE" > "$LOG_FILE" 2>&1 &
   IMPORT_PID=$!
   echo "$IMPORT_PID" > "$PID_FILE"
   echo "Importer PID: $IMPORT_PID" >> "$LOG_FILE"
@@ -111,7 +112,8 @@ main() {
   # Create indexes if requested
   if [ "$CREATE_INDEXES_AFTER_IMPORT" = yes ]; then
     echo "Creating indexes with --create-indexes" >> "$LOG_FILE"
-    nohup "$RELEASE_BIN" --create-indexes --db-host "$DB_HOST" --db-port "$DB_PORT" --db-user "$DB_USER" --db-password "$DB_PASS" --db-name "$DB_NAME" >> "$LOG_FILE" 2>&1 &
+    # Create indexes (omit --db-port)
+    nohup "$RELEASE_BIN" --create-indexes --db-host "$DB_HOST" --db-user "$DB_USER" --db-password "$DB_PASS" --db-name "$DB_NAME" >> "$LOG_FILE" 2>&1 &
     wait $! || true
     echo "Index creation finished at $(date)" >> "$LOG_FILE"
   fi
