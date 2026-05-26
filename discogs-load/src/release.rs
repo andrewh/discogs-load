@@ -155,12 +155,21 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
             ParserReadState::Release => {
                 match ev {
                     Event::Start(e) if e.local_name() == b"release" => {
-                        self.current_release.status = str::parse(str::from_utf8(
-                            &e.attributes().nth(1).unwrap()?.unescaped_value()?,
-                        )?)?;
-                        self.current_id = str::parse(str::from_utf8(
-                            &e.attributes().next().unwrap()?.unescaped_value()?,
-                        )?)?;
+                        // Be defensive: attributes order is not guaranteed. Find attributes by name.
+                        let mut id_opt: Option<i32> = None;
+                        let mut status_opt: Option<String> = None;
+                        for attr_res in e.attributes() {
+                            let attr = attr_res?;
+                            let key = attr.key;
+                            let val = str::from_utf8(&attr.unescaped_value()?)?;
+                            match key {
+                                b"id" => id_opt = Some(str::parse(val)?),
+                                b"status" => status_opt = Some(str::parse(val)?),
+                                _ => {}
+                            }
+                        }
+                        self.current_release.status = status_opt.unwrap_or_default();
+                        self.current_id = id_opt.unwrap_or_default();
                         self.current_release.id = self.current_id;
                         self.current_release.genres = Vec::new();
                         self.current_release.styles = Vec::new();
@@ -324,20 +333,26 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
 
             ParserReadState::Labels => match ev {
                 Event::Empty(e) => {
-                    let label_id = str::parse(str::from_utf8(
-                        &e.attributes().nth(2).unwrap()?.unescaped_value()?,
-                    )?)?;
+                    // Parse attributes defensively by name: name, catno, id
+                    let mut name = String::new();
+                    let mut catno = String::new();
+                    let mut label_id = 0i32;
+                    for attr_res in e.attributes() {
+                        let attr = attr_res?;
+                        let key = attr.key;
+                        let val = str::from_utf8(&attr.unescaped_value()?)?;
+                        match key {
+                            b"name" => name = val.to_string(),
+                            b"catno" => catno = val.to_string(),
+                            b"id" => label_id = str::parse(val)?,
+                            _ => {}
+                        }
+                    }
                     self.release_labels.entry(label_id).or_insert(ReleaseLabel {
                         release_id: self.current_release.id,
-                        label: str::parse(str::from_utf8(
-                            &e.attributes().next().unwrap()?.unescaped_value()?,
-                        )?)?,
-                        catno: str::parse(str::from_utf8(
-                            &e.attributes().nth(1).unwrap()?.unescaped_value()?,
-                        )?)?,
-                        label_id: str::parse(str::from_utf8(
-                            &e.attributes().nth(2).unwrap()?.unescaped_value()?,
-                        )?)?,
+                        label: name,
+                        catno: catno,
+                        label_id: label_id,
                     });
                     ParserReadState::Labels
                 }
@@ -349,16 +364,25 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
 
             ParserReadState::Videos => match ev {
                 Event::Start(e) if e.local_name() == b"video" => {
+                    // Parse attributes by name: duration, src
+                    let mut duration = 0i32;
+                    let mut src = String::new();
+                    for attr_res in e.attributes() {
+                        let attr = attr_res?;
+                        let key = attr.key;
+                        let val = str::from_utf8(&attr.unescaped_value()?)?;
+                        match key {
+                            b"duration" => duration = str::parse(val)?,
+                            b"src" => src = val.to_string(),
+                            _ => {}
+                        }
+                    }
                     self.release_videos
                         .entry(self.current_video_id)
                         .or_insert(ReleaseVideo {
                             release_id: self.current_release.id,
-                            duration: str::parse(str::from_utf8(
-                                &e.attributes().nth(1).unwrap()?.unescaped_value()?,
-                            )?)?,
-                            src: str::parse(str::from_utf8(
-                                &e.attributes().next().unwrap()?.unescaped_value()?,
-                            )?)?,
+                            duration,
+                            src,
                             title: String::new(),
                         });
                     self.current_video_id += 1;
