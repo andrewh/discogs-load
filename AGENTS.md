@@ -55,3 +55,72 @@ If you need more context
 - Look at `.github/workflows/*` to see exactly what CI and release steps expect.
 
 If something is missing here or you find a stale instruction, update this file — it exists to stop future agents from guessing.
+
+Recent work and repo additions
+- Added a provenance-aware graph schema and example ingestion artifacts for Discogs data. Key new files:
+  - sql/tables/provenance_graph.sql (provenance schema: data_sources, source_records, entities, relationships, provenance views)
+  - sql/examples/discogs_labels_example.sql (small example that inserts two label source_records + entities + provenance)
+  - sql/examples/discogs_labels_from_existing_db.sql (imports source_records and creates entities/provenance from existing label table)
+  - sql/functions/upsert_helpers.sql (PL/pgSQL helpers: upsert_entity_with_provenance, upsert_relationship_with_provenance)
+  - sql/indexes_safe.sql (idempotent/conditional index creation script)
+  - scripts/run_discogs_import_and_tune.sh (helper to build, ALTER SYSTEM tune, run import, create indexes, revert settings)
+
+What I ran here (practical, reproducible steps)
+- Built release binary: cargo build --release --bin discogs-load
+- Import large files with release binary (example used in this session):
+  ./target/release/discogs-load ./discogs_20260501_releases.xml.gz --db-host localhost --db-user dev --db-password dev_pass --db-name discogs --batch-size 50000
+  ./target/release/discogs-load ./discogs_20260501_artists.xml.gz --db-host localhost --db-user dev --db-password dev_pass --db-name discogs --batch-size 50000
+- Index creation: prefer sql/indexes_safe.sql which only creates indexes for existing tables:
+  psql -h localhost -U dev -d discogs -f sql/indexes_safe.sql
+- ANALYZE after large loads to refresh planner statistics:
+  psql -h localhost -U dev -d discogs -c "ANALYZE VERBOSE release;"
+
+Notable runtime/operational details and fixes
+- The loader's CLI does not accept a --db-port flag; pass --db-host, --db-user, --db-password, --db-name only.
+- The releases parser initially panicked due to unchecked unwrap() on XML attributes. I hardened the parser to defensively parse attributes by name and avoid unwraps. If you hit an early crash, ensure you have the latest commit that handles malformed/missing attributes.
+- For large dumps run the release binary in release mode and create indexes after loading. Creating indexes during insert is much slower and may fail if dependent tables are missing.
+- I added a small wrapper script (scripts/run_discogs_import_and_tune.sh) that will: build a release binary, optionally apply ALTER SYSTEM tuning (synchronous_commit = off; maintenance_work_mem = 1GB), run the import (nohup background), create indexes after import, then revert ALTER SYSTEM changes.
+  - ALTER SYSTEM requires superuser privileges. If you do not have superuser access, the script will continue without applying sys-tuning.
+
+Discovery notes and gotchas encountered while importing
+- Import of releases (large file) succeeded; index creation failed initially because sql/indexes.sql referenced tables (artist) that were not present — use sql/indexes_safe.sql instead.
+- The process can be long-running: release import produced ~19M release rows (~6GB heap). Use nohup/tmux and monitor logs (import_run*.log).
+- If parser panics, run with RUST_BACKTRACE=1 to see stack traces. I fixed a panic in releases parser earlier.
+- The importer writes to the DB tables defined by sql/tables/*.sql; check these files to know which tables will be created for a given dump type (release/label/artist/master).
+- When importing artists/releases/masters/labels separately, create indexes only after importing the tables that indexes reference, or use indexes_safe.sql.
+
+State observed on the working DB (as imported in this session)
+- release: ~19,087,916 rows (approx, ANALYZE estimate); heap ~6.0 GB; total ~7.0 GB
+- release_label: ~7,652,252 rows
+- release_video: ~11,158,433 rows
+- label: 2,372,322 rows
+- master: 2,551,002 rows
+- master_artist: 3,132,578 rows
+- artist: 10,039,040 rows
+
+Indexes created during session (safe script)
+- idx_release, pkey_release on release
+- idx_release_label on release_label(release_id)
+- idx_release_video on release_video(release_id)
+- idx_artist on artist(id)
+- idx_label on label(id)
+- idx_master_artist_master and idx_master_artist_artist on master_artist
+
+Performance tips
+- Use cargo build --release for importing large dumps; debug builds are much slower.
+- Increase batch-size for a fast server (I used 50000 here). If you see OOM or memory issues, reduce it.
+- Disable synchronous_commit and increase maintenance_work_mem during bulk load for speed (requires superuser). Revert after load.
+- Create indexes after the bulk load, not during. Use conditional index script if you import files in stages.
+
+Useful commands collected from session
+- Start Postgres locally (docker): docker-compose up -d postgres
+- Create role & DB:
+  psql -h localhost -U postgres -c "CREATE ROLE dev WITH LOGIN PASSWORD 'dev_pass';" || true
+  psql -h localhost -U postgres -c "CREATE DATABASE discogs OWNER dev;" || true
+- Import releases (release build, background):
+  nohup ./target/release/discogs-load /path/to/releases.xml.gz --db-host localhost --db-user dev --db-password 'dev_pass' --db-name discogs --batch-size 50000 > import_release.log 2>&1 &
+- Create safe indexes: psql -h localhost -U dev -d discogs -f sql/indexes_safe.sql
+- Analyze tables: psql -h localhost -U dev -d discogs -c "ANALYZE VERBOSE release;"
+- Tail logs: tail -f import_release.log
+
+If anything here looks wrong or you want a different policy (for example, different index names, different normalization/merge policy for entities), update this file or tell me and I will make the minimal changes required.
