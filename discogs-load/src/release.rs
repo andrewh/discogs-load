@@ -159,13 +159,23 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
                         let mut id_opt: Option<i32> = None;
                         let mut status_opt: Option<String> = None;
                         for attr_res in e.attributes() {
-                            let attr = attr_res?;
-                            let key = attr.key;
-                            let val = str::from_utf8(&attr.unescaped_value()?)?;
-                            match key {
-                                b"id" => id_opt = Some(str::parse(val)?),
-                                b"status" => status_opt = Some(str::parse(val)?),
-                                _ => {}
+                            if let Ok(attr) = attr_res {
+                                let key = attr.key;
+                                if let Ok(raw) = attr.unescaped_value() {
+                                    if let Ok(val) = str::from_utf8(&raw) {
+                                        match key {
+                                            b"id" => {
+                                                if let Ok(parsed) = str::parse::<i32>(val) {
+                                                    id_opt = Some(parsed);
+                                                }
+                                            }
+                                            b"status" => {
+                                                status_opt = Some(val.to_string());
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
                             }
                         }
                         self.current_release.status = status_opt.unwrap_or_default();
@@ -338,14 +348,22 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
                     let mut catno = String::new();
                     let mut label_id = 0i32;
                     for attr_res in e.attributes() {
-                        let attr = attr_res?;
-                        let key = attr.key;
-                        let val = str::from_utf8(&attr.unescaped_value()?)?;
-                        match key {
-                            b"name" => name = val.to_string(),
-                            b"catno" => catno = val.to_string(),
-                            b"id" => label_id = str::parse(val)?,
-                            _ => {}
+                        if let Ok(attr) = attr_res {
+                            let key = attr.key;
+                            if let Ok(raw) = attr.unescaped_value() {
+                                if let Ok(val) = str::from_utf8(&raw) {
+                                    match key {
+                                        b"name" => name = val.to_string(),
+                                        b"catno" => catno = val.to_string(),
+                                        b"id" => {
+                                            if let Ok(parsed) = str::parse::<i32>(val) {
+                                                label_id = parsed;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
                     }
                     self.release_labels.entry(label_id).or_insert(ReleaseLabel {
@@ -368,13 +386,21 @@ impl<'a> Parser<'a> for ReleasesParser<'a> {
                     let mut duration = 0i32;
                     let mut src = String::new();
                     for attr_res in e.attributes() {
-                        let attr = attr_res?;
-                        let key = attr.key;
-                        let val = str::from_utf8(&attr.unescaped_value()?)?;
-                        match key {
-                            b"duration" => duration = str::parse(val)?,
-                            b"src" => src = val.to_string(),
-                            _ => {}
+                        if let Ok(attr) = attr_res {
+                            let key = attr.key;
+                            if let Ok(raw) = attr.unescaped_value() {
+                                if let Ok(val) = str::from_utf8(&raw) {
+                                    match key {
+                                        b"duration" => {
+                                            if let Ok(parsed) = str::parse::<i32>(val) {
+                                                duration = parsed;
+                                            }
+                                        }
+                                        b"src" => src = val.to_string(),
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
                     }
                     self.release_videos
